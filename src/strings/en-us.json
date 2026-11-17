@@ -1,4 +1,6 @@
 {
+    "SelectDiscTitle": "Choose a disc title",
+    "DiscTitleChapterCount": "Chapters: {0}",
     "Absolute": "Absolute",
     "AccessRestrictedTryAgainLater": "Access is currently restricted. Please try again later.",
     "Actor": "Actor",

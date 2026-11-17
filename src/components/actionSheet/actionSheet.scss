@@ -142,3 +142,9 @@
         right: 0.5em;
     }
 }
+
+// Inline cancellation belongs below the choices; only the fullscreen back button
+// uses the fixed position above.
+.actionsheet-not-fullscreen .btnCloseActionSheet {
+    position: static;
+}

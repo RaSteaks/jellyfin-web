@@ -179,6 +179,9 @@ function showWithUser(options, player, user) {
     const supportedCommands = playbackManager.getSupportedCommands(player);
 
     const menuItems = [];
+    if (playbackManager.currentMediaSource(player)?.DiscItemId) {
+        menuItems.push({ name: globalize.translate('SelectDiscTitle'), id: 'disctitle' });
+    }
     if (supportedCommands.indexOf('SetAspectRatio') !== -1) {
         const currentAspectRatioId = playbackManager.getAspectRatio(player);
         const currentAspectRatio = playbackManager.getSupportedAspectRatios(player).filter(function (i) {
@@ -264,6 +267,8 @@ export function show(options) {
 
 function handleSelectedOption(id, options, player) {
     switch (id) {
+        case 'disctitle':
+            return playbackManager.chooseDiscTitle(player);
         case 'quality':
             return showQualityMenu(player, options.positionTo);
         case 'aspectratio':

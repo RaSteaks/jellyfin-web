@@ -414,6 +414,20 @@ function setStreamUrls(items, deviceProfile, maxBitrate, apiClient, startPositio
     });
 }
 
+async function chooseDiscTitle(sources) {
+    const { default: actionsheet } = await import('../actionSheet/actionSheet');
+    loading.hide();
+    return actionsheet.show({
+        title: globalize.translate('SelectDiscTitle'),
+        items: sources.map(source => ({
+            id: source.Id,
+            name: source.Name,
+            secondaryText: globalize.translate('DiscTitleChapterCount', source.DiscChapters?.length || 0)
+        })),
+        showCancel: true
+    });
+}
+
 async function getPlaybackInfo(player, apiClient, item, deviceProfile, mediaSourceId, liveStreamId, options) {
     if (!itemHelper.isLocalItem(item) && item.MediaType === 'Audio' && !player.useServerPlaybackInfoForAudio) {
         return {
@@ -498,8 +512,19 @@ async function getPlaybackInfo(player, apiClient, item, deviceProfile, mediaSour
     query.AlwaysBurnInSubtitleWhenTranscoding = appSettings.alwaysBurnInSubtitleWhenTranscoding();
 
     query.DeviceProfile = deviceProfile;
+    query.SupportsDiscTitleSelection = true;
 
     const res = await getMediaInfoApi(api).getPostedPlaybackInfo({ itemId: itemId, playbackInfoDto: query });
+    if (res.data.RequiresDiscTitleSelection) {
+        const id = await chooseDiscTitle(res.data.MediaSources);
+        const selected = res.data.MediaSources.find(source => source.Id === id);
+        options.startPosition = selected.DiscResumePositionTicks || 0;
+        options.audioStreamIndex = null;
+        options.subtitleStreamIndex = null;
+        loading.show();
+        return getPlaybackInfo(player, apiClient, item, deviceProfile, id, null, options);
+    }
+
     return res.data;
 }
 
@@ -740,6 +765,12 @@ export class PlaybackManager {
 
             const data = getPlayerData(player);
             return data.streamInfo ? data.streamInfo.item : null;
+        };
+
+        self.chooseDiscTitle = function (player) {
+            const item = self.currentItem(player);
+            const source = self.currentMediaSource(player);
+            return self.play({ items: [item], mediaSourceId: source.DiscItemId, forceDiscTitleSelection: true });
         };
 
         self.currentMediaSource = function (player) {
@@ -2168,6 +2199,33 @@ export class PlaybackManager {
 
             // Prepare the list of items
             items = await translateItemsForPlayback(items, options);
+            // Resolve the first disc before expanding its queue: a resumed title can
+            // belong to a later disc, and its source ID is not a library item ID.
+            const start = options.startIndex || 0;
+            const first = items[start];
+            const firstSource = first.MediaSources?.find(source => source.Id === options.mediaSourceId) || first.MediaSources?.[0];
+            if (['BluRay', 'Dvd', 'Iso'].includes(firstSource?.VideoType || first.VideoType)) {
+                const client = ServerConnections.getApiClient(first.ServerId);
+                const api = ServerConnections.getApi(first.ServerId);
+                const query = { UserId: client.getCurrentUserId(), MediaSourceId: options.mediaSourceId, StartTimeTicks: options.startPositionTicks, SupportsDiscTitleSelection: true, ForceDiscTitleSelection: !!options.forceDiscTitleSelection };
+                let response = (await getMediaInfoApi(api).getPostedPlaybackInfo({ itemId: first.Id, playbackInfoDto: query })).data;
+                if (response.RequiresDiscTitleSelection) {
+                    query.MediaSourceId = await chooseDiscTitle(response.MediaSources);
+                    response = (await getMediaInfoApi(api).getPostedPlaybackInfo({ itemId: first.Id, playbackInfoDto: query })).data;
+                }
+                if (!validatePlaybackInfoResult(self, response)) {
+                    return;
+                }
+                const source = response.MediaSources[0];
+                options.mediaSourceId = source.Id;
+                options.startPositionTicks = options.startPositionTicks === 0 ? 0 : source.DiscResumePositionTicks || 0;
+                options.audioStreamIndex = source.DefaultAudioStreamIndex;
+                options.subtitleStreamIndex = source.DefaultSubtitleStreamIndex;
+                options.secondarySubtitleStreamIndex = -1;
+                items[start] = await client.getItem(client.getCurrentUserId(), source.DiscItemId);
+                items[start].ServerId = first.ServerId;
+            }
+
             // Add any additional parts for movies or episodes
             items = await getAdditionalParts(items, options.mediaSourceId, options.startIndex || 0);
             // Adjust the start index for additional parts added to the queue
@@ -2325,10 +2383,9 @@ export class PlaybackManager {
 
         const getAdditionalParts = async (items, mediaSourceId, startIndex) => {
             const getItemAndParts = async function (item, isStartItem) {
-                if (
-                    item.PartCount && item.PartCount > 1
-                    && [ BaseItemKind.Episode, BaseItemKind.Movie ].includes(item.Type)
-                ) {
+                const isDiscSource = isStartItem && mediaSourceId?.startsWith('disc-');
+                if (isDiscSource || (item.PartCount && item.PartCount > 1
+                    && [ BaseItemKind.Episode, BaseItemKind.Movie ].includes(item.Type))) {
                     const client = ServerConnections.getApiClient(item.ServerId);
                     const user = await client.getCurrentUser();
                     // When the user picked an alternate version, that version's MediaSourceId
@@ -2338,7 +2395,9 @@ export class PlaybackManager {
                     const idForParts = (isStartItem && mediaSourceId && mediaSourceId !== item.Id) ?
                         mediaSourceId :
                         item.Id;
-                    const additionalParts = await client.getAdditionalVideoParts(user.Id, idForParts);
+                    const additionalParts = isDiscSource ?
+                        await client.getJSON(client.getUrl(`Videos/${item.Id}/AdditionalParts`, { userId: user.Id, mediaSourceId })) :
+                        await client.getAdditionalVideoParts(user.Id, idForParts);
                     if (additionalParts.Items.length) {
                         return [ item, ...additionalParts.Items ];
                     }
@@ -2703,7 +2762,8 @@ export class PlaybackManager {
 
             const apiClient = ServerConnections.getApiClient(item.ServerId);
             const isLiveTv = [BaseItemKind.TvChannel, BaseItemKind.LiveTvChannel].includes(item.Type);
-            const getSourceItem = isLiveTv ? Promise.resolve(null) : apiClient.getItem(apiClient.getCurrentUserId(), mediaSourceId || item.Id);
+            const sourceItemId = mediaSourceId?.startsWith('disc-') ? item.Id : mediaSourceId || item.Id;
+            const getSourceItem = isLiveTv ? Promise.resolve(null) : apiClient.getItem(apiClient.getCurrentUserId(), sourceItemId);
 
             return Promise.all([promise, player.getDeviceProfile(item), apiClient.getCurrentUser(), getSourceItem]).then(function (responses) {
                 const deviceProfile = responses[1];
@@ -2782,7 +2842,7 @@ export class PlaybackManager {
 
                     const playedItem = await getItemOfMediaSource(apiClient, item, mediaSource, sourceItem);
 
-                    const streamInfo = createStreamInfo(apiClient, item.MediaType, playedItem, mediaSource, startPosition, player);
+                    const streamInfo = createStreamInfo(apiClient, item.MediaType, playedItem, mediaSource, options.startPosition, player);
                     streamInfo.aspectRatio = playOptions.aspectRatio;
                     streamInfo.fullscreen = playOptions.fullscreen;
 
@@ -3011,6 +3071,9 @@ export class PlaybackManager {
 
         // Chapters and trickplay data belong to the item owning the played media source.
         function getItemOfMediaSource(apiClient, item, mediaSource, sourceItem) {
+            if (mediaSource.DiscItemId) {
+                return Promise.resolve({ ...item, Chapters: mediaSource.DiscChapters || [], Trickplay: {} });
+            }
             if (!mediaSource.hasAlternateVersions || mediaSource.Id === item.Id) {
                 return Promise.resolve(item);
             }
