@@ -3,6 +3,7 @@ import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-field
 import { PersonKind } from '@jellyfin/sdk/lib/generated-client/models/person-kind';
 import { getLibraryApi } from '@jellyfin/sdk/lib/utils/api/library-api';
 import { getLyricApi } from '@jellyfin/sdk/lib/utils/api/lyric-api';
+import { getMediaInfoApi } from '@jellyfin/sdk/lib/utils/api/media-info-api';
 import { getVideoApi } from '@jellyfin/sdk/lib/utils/api/video-api';
 import { OutboundWebSocketMessageType } from '@jellyfin/sdk/lib/websocket';
 import { intervalToDuration } from 'date-fns';
@@ -216,8 +217,13 @@ function renderTrackSelections(page, instance, item, forceReload) {
 
     const currentValue = select.value;
 
-    const selectedId = mediaSources.some(m => m.Id === currentValue) ? currentValue : mediaSources[0].Id;
-    select.innerHTML = mediaSources.map(function (v) {
+    const first = mediaSources[0];
+    const needsTitle = first.DiscItemId && !first.DiscTitleSelected
+        && mediaSources.filter(source => source.DiscItemId === first.DiscItemId).length > 1;
+    const defaultSourceId = needsTitle ? '' : first.Id;
+    const selectedId = mediaSources.some(m => m.Id === currentValue) ? currentValue : defaultSourceId;
+    const placeholder = needsTitle ? `<option value="">${escapeHtml(globalize.translate('SelectDiscTitle'))}</option>` : '';
+    select.innerHTML = placeholder + mediaSources.map(function (v) {
         const selected = v.Id === selectedId ? ' selected' : '';
         return '<option value="' + v.Id + '"' + selected + '>' + escapeHtml(v.Name) + '</option>';
     }).join('');
@@ -238,7 +244,7 @@ function renderTrackSelections(page, instance, item, forceReload) {
 function renderVideoSelections(page, mediaSources) {
     const mediaSource = getSelectedMediaSource(page, mediaSources);
 
-    const tracks = mediaSource.MediaStreams.filter(function (m) {
+    const tracks = (mediaSource?.MediaStreams || []).filter(function (m) {
         return m.Type === 'Video';
     });
 
@@ -272,13 +278,13 @@ function renderVideoSelections(page, mediaSources) {
 function renderAudioSelections(page, mediaSources) {
     const mediaSource = getSelectedMediaSource(page, mediaSources);
 
-    const tracks = mediaSource.MediaStreams.filter(function (m) {
+    const tracks = (mediaSource?.MediaStreams || []).filter(function (m) {
         return m.Type === 'Audio';
     });
     tracks.sort(itemHelper.sortTracks);
     const select = page.querySelector('.selectAudio');
     select.setLabel(globalize.translate('Audio'));
-    const selectedId = mediaSource.DefaultAudioStreamIndex;
+    const selectedId = mediaSource?.DefaultAudioStreamIndex;
     select.innerHTML = tracks.map(function (v) {
         const selected = v.Index === selectedId ? ' selected' : '';
         return `<option value="${v.Index}" ${selected}>${escapeHtml(v.DisplayTitle)}</option>`;
@@ -300,13 +306,13 @@ function renderAudioSelections(page, mediaSources) {
 function renderSubtitleSelections(page, mediaSources) {
     const mediaSource = getSelectedMediaSource(page, mediaSources);
 
-    const tracks = mediaSource.MediaStreams.filter(function (m) {
+    const tracks = (mediaSource?.MediaStreams || []).filter(function (m) {
         return m.Type === 'Subtitle';
     });
     tracks.sort(itemHelper.sortTracks);
     const select = page.querySelector('.selectSubtitles');
     select.setLabel(globalize.translate('Subtitles'));
-    const selectedId = mediaSource.DefaultSubtitleStreamIndex == null ? -1 : mediaSource.DefaultSubtitleStreamIndex;
+    const selectedId = mediaSource?.DefaultSubtitleStreamIndex ?? -1;
 
     let selected = selectedId === -1 ? ' selected' : '';
     select.innerHTML = '<option value="-1">' + globalize.translate('Off') + '</option>' + tracks.map(function (v) {
@@ -1939,6 +1945,7 @@ export default function (view, params) {
         Promise.all([getPromise(apiClient, pageParams), apiClient.getCurrentUser()]).then(([item, user]) => {
             currentItem = item;
             reloadFromItem(instance, page, pageParams, item, user);
+            if (getSelectedMediaSource(page, item.MediaSources || [])?.DiscItemId) refreshSelectedVersion();
         }).catch((error) => {
             console.error('failed to get item or current user: ', error);
         });
@@ -1962,12 +1969,13 @@ export default function (view, params) {
     }
 
     function getPlayOptions(startPosition) {
-        const audioStreamIndex = view.querySelector('.selectAudio').value || null;
+        const source = getSelectedMediaSource(view, self._currentPlaybackMediaSources || []);
+        const pendingDiscTracks = source?.DiscItemId && !source.MediaStreams.length;
         return {
             startPositionTicks: startPosition,
             mediaSourceId: view.querySelector('.selectSource').value,
-            audioStreamIndex: audioStreamIndex,
-            subtitleStreamIndex: view.querySelector('.selectSubtitles').value
+            audioStreamIndex: pendingDiscTracks ? null : view.querySelector('.selectAudio').value || null,
+            subtitleStreamIndex: pendingDiscTracks ? null : view.querySelector('.selectSubtitles').value || null
         };
     }
 
@@ -2057,7 +2065,8 @@ export default function (view, params) {
 
     function onMoreCommandsClick() {
         const button = this;
-        let selectedItem = view.querySelector('.selectSource').value || currentItem.Id;
+        const selectedSource = getSelectedMediaSource(view, self._currentPlaybackMediaSources);
+        let selectedItem = selectedSource?.DiscVersionId || selectedSource?.Id || currentItem.Id;
 
         const apiClient = getApiClient();
 
@@ -2184,6 +2193,27 @@ export default function (view, params) {
         const api = ServerConnections.getApi(currentItem.ServerId);
         if (!api) {
             console.error('[ItemDetails] no Api instance available for server', currentItem.ServerId);
+            return;
+        }
+
+        const selectedSource = self._currentPlaybackMediaSources.find(source => source.Id === selectedId);
+        if (selectedSource?.DiscItemId) {
+            getMediaInfoApi(api).getPostedPlaybackInfo({
+                itemId: currentItem.Id,
+                playbackInfoDto: { UserId: apiClient.getCurrentUserId(), MediaSourceId: selectedId }
+            }).then(({ data }) => {
+                if (view.querySelector('.selectSource').value !== selectedId) return;
+                const source = data.MediaSources[0];
+                Object.assign(selectedSource, source);
+                renderVideoSelections(view, self._currentPlaybackMediaSources);
+                renderAudioSelections(view, self._currentPlaybackMediaSources);
+                renderSubtitleSelections(view, self._currentPlaybackMediaSources);
+                reloadPlayButtons(view, {
+                    ...currentItem,
+                    RunTimeTicks: source.RunTimeTicks,
+                    UserData: { ...currentItem.UserData, PlaybackPositionTicks: source.DiscResumePositionTicks || 0 }
+                });
+            }).catch(error => console.error('failed to load disc title tracks', error));
             return;
         }
 

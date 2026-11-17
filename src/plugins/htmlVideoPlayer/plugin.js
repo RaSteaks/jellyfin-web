@@ -1,4 +1,6 @@
 import DOMPurify from 'dompurify';
+import { DiscPlaybackController } from './discPlayback';
+import { pluginManager } from '../../components/pluginManager';
 import debounce from 'lodash-es/debounce';
 import Screenfull from 'screenfull';
 
@@ -121,6 +123,9 @@ function enableNativeTrackSupport(mediaSource, track) {
 function requireHlsPlayer() {
     return import('hls.js/dist/hls.js').then(({ default: hls }) => {
         hls.DefaultConfig.lowLatencyMode = false;
+        // Use the package's standalone worker: re-minifying an inline worker can
+        // leave references to its enclosing bundle outside the worker scope.
+        hls.DefaultConfig.workerPath = `${appRouter.baseUrl()}/libraries/hls.worker.js`;
         hls.DefaultConfig.backBufferLength = Infinity;
         // deprecated with no viable replacement
         // eslint-disable-next-line @typescript-eslint/no-deprecated
@@ -574,6 +579,37 @@ export class HtmlVideoPlayer {
                     xhr.withCredentials = includeCorsCredentials;
                 }
             });
+            const syncPlay = pluginManager.firstOfType(PluginType.SyncPlay)?.instance;
+            if (options.mediaSource.DiscTitle != null && !syncPlay?.Manager.isSyncPlayEnabled()) {
+                hls.config.abrBandWidthFactor = 0.7;
+                hls.config.abrBandWidthUpFactor = 0.7;
+                this._discPlayback = new DiscPlaybackController(hls, elem, {
+                    mobile: browser.mobile,
+                    restrictedHighBitrate: browser.chrome || browser.edgeChromium || browser.firefox,
+                    duration: options.mediaSource.RunTimeTicks / 10000000,
+                    initialBandwidth: options.initialBandwidth,
+                    onStatus: status => {
+                        const previous = this._discBufferStatus;
+                        this._discBufferStatus = status;
+                        if (status.waiting !== previous?.waiting
+                            || Math.floor(status.bufferedSeconds) !== Math.floor(previous?.bufferedSeconds || 0)) {
+                            Events.trigger(this, 'discbufferchange');
+                        }
+                        if (status.waiting !== previous?.waiting) {
+                            Events.trigger(this, status.waiting ? 'waiting' : 'canplay');
+                        }
+                    },
+                    onError: error => {
+                        if (error?.name === 'NotAllowedError' || error?.name === 'AbortError') {
+                            // The existing play button can recover a blocked autoplay request.
+                            Events.trigger(this, 'pause');
+                            return;
+                        }
+                        console.error('Disc playback resume failed', error);
+                        onErrorInternal(this, MediaError.PLAYER_ERROR);
+                    }
+                });
+            }
             hls.loadSource(url);
             hls.attachMedia(elem);
 
@@ -1177,6 +1213,7 @@ export class HtmlVideoPlayer {
      * @private
      */
     onPause = () => {
+        if (this._discPlayback?.isHolding) return;
         Events.trigger(this, 'pause');
     };
 
@@ -1185,6 +1222,7 @@ export class HtmlVideoPlayer {
     };
 
     onCanPlay = () => {
+        if (this._discPlayback?.isHolding) return;
         Events.trigger(this, 'canplay');
     };
 
@@ -2117,10 +2155,21 @@ export class HtmlVideoPlayer {
         }
     }
 
+    getDiscBufferStatus() {
+        return this._discBufferStatus;
+    }
+
+    playNow() {
+        this._discPlayback?.playNow();
+    }
+
     pause() {
-        const mediaElement = this.#mediaElement;
-        if (mediaElement) {
-            mediaElement.pause();
+        if (this._discPlayback) {
+            const wasHolding = this._discPlayback.isHolding;
+            this._discPlayback.pauseForUser();
+            if (wasHolding) Events.trigger(this, 'pause');
+        } else {
+            this.#mediaElement?.pause();
         }
     }
 
@@ -2130,6 +2179,10 @@ export class HtmlVideoPlayer {
     }
 
     unpause() {
+        if (this._discPlayback) {
+            this._discPlayback.playNow();
+            return;
+        }
         const mediaElement = this.#mediaElement;
         if (mediaElement) {
             mediaElement.play();
@@ -2137,6 +2190,7 @@ export class HtmlVideoPlayer {
     }
 
     paused() {
+        if (this._discPlayback?.isHolding) return false;
         const mediaElement = this.#mediaElement;
         if (mediaElement) {
             return mediaElement.paused;

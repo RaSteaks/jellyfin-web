@@ -30,13 +30,15 @@ import { ActionData } from 'types/actionData';
 import { CODECS, HEVC_REXT_DECODING_TYPES, HEVC_VP9_HW_DECODING_TYPES } from 'apps/dashboard/features/playback/constants/codecs';
 import SimpleAlert from 'components/SimpleAlert';
 
+type DiscEncodingOptions = EncodingOptions & { EnableDiscAdaptiveBitrateStreaming?: boolean };
+
 const CONFIG_KEY = 'encoding';
 
 export const action = async ({ request }: ActionFunctionArgs) => {
     const api = ServerConnections.getApi();
     if (!api) throw new Error('No Api instance available');
 
-    const data = await request.json() as EncodingOptions;
+    const data = await request.json() as DiscEncodingOptions;
 
     await getSystemApi(api)
         .updateNamedConfiguration({ key: CONFIG_KEY, body: data });
@@ -51,8 +53,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export const Component = () => {
-    const { data: initialConfig, isPending, isError } = useNamedConfiguration<EncodingOptions>(CONFIG_KEY);
-    const [ config, setConfig ] = useState<EncodingOptions | null>(null);
+    const { data: initialConfig, isPending, isError } = useNamedConfiguration<DiscEncodingOptions>(CONFIG_KEY);
+    const [ config, setConfig ] = useState<DiscEncodingOptions | null>(null);
     const navigation = useNavigation();
     const actionData = useActionData() as ActionData | undefined;
     const submit = useSubmit();
@@ -834,6 +836,20 @@ export const Component = () => {
                                     }
                                 />
                                 <FormHelperText>{globalize.translate('AllowOnTheFlySubtitleExtractionHelp')}</FormHelperText>
+                            </FormControl>
+
+                            <FormControl>
+                                <FormControlLabel
+                                    label={globalize.translate('DiscAdaptiveStreaming')}
+                                    control={
+                                        <Checkbox
+                                            name='EnableDiscAdaptiveBitrateStreaming'
+                                            checked={config.EnableDiscAdaptiveBitrateStreaming ?? false}
+                                            onChange={onCheckboxChange}
+                                        />
+                                    }
+                                />
+                                <FormHelperText>{globalize.translate('DiscAdaptiveStreamingHelp')}</FormHelperText>
                             </FormControl>
 
                             <FormControl>

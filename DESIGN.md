@@ -16,3 +16,10 @@ existing theme styles and components.
   inline colors, custom dialog implementation or unrelated screen changes.
 
 Verify this workflow with the existing keyboard navigation and a narrow viewport.
+
+Disc buffering reuses the video OSD's text/flat-button styles and the existing
+loading indicator. The inline status announces buffered seconds and offers Play
+without adding a settings panel. Automatic waits are distinct from manual pauses.
+The dashboard uses its existing Checkbox/FormControl pattern for the server's
+opt-in disc adaptive-quality setting. Source labels and video/audio/subtitle
+selectors remain owned by the existing item-details workflow.

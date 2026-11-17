@@ -216,6 +216,9 @@ export function destroyCastPlayer(instance) {
 }
 
 export function destroyHlsPlayer(instance) {
+    instance._discPlayback?.destroy();
+    instance._discPlayback = null;
+    instance._discBufferStatus = null;
     const player = instance._hlsPlayer;
     if (player) {
         try {

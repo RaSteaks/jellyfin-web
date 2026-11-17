@@ -1,4 +1,7 @@
 {
+    "DiscAdaptiveStreaming": "Adaptive quality for disc titles",
+    "DiscAdaptiveStreamingHelp": "Offer multiple video qualities to compatible players. Requires permission to transcode video and audio. Enable transcoding throttling and segment deletion to limit temporary data.",
+    "DiscBufferingStatus": "Buffering: {0} of {1} seconds",
     "SelectDiscTitle": "Choose a disc title",
     "DiscTitleChapterCount": "Chapters: {0}",
     "Absolute": "Absolute",

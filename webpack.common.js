@@ -10,6 +10,7 @@ const packageJson = require('./package.json');
 
 const Assets = [
     'native-promise-only/npo.js',
+    'hls.js/dist/hls.worker.js',
     'libarchive.js/dist/worker-bundle.js',
     'libarchive.js/dist/libarchive.wasm',
     '@jellyfin/libass-wasm/dist/js/default.woff2',

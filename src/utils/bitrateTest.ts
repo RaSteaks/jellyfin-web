@@ -137,9 +137,9 @@ const normalizeReturnBitrate = (bitrate: number) => {
  * @param {number | undefined} currentBitrate Current bitrate
  * @returns {number} Normalized bitrate
  */
-const detectBitrateInternal = (api: Api, tests: BitrateTest[], index: number, currentBitrate: number | undefined): Promise<number> => {
+const detectBitrateInternal = (api: Api, tests: BitrateTest[], index: number, currentBitrate: number | undefined, normalize = normalizeReturnBitrate): Promise<number> => {
     if (index >= tests.length) {
-        return Promise.resolve(normalizeReturnBitrate(currentBitrate || 0));
+        return Promise.resolve(normalize(currentBitrate || 0));
     }
 
     const test = tests[index];
@@ -148,12 +148,12 @@ const detectBitrateInternal = (api: Api, tests: BitrateTest[], index: number, cu
         // eslint-disable-next-line sonarjs/function-return-type
         (bitrate) => {
             if (bitrate < test.threshold) {
-                return normalizeReturnBitrate(bitrate);
+                return normalize(bitrate);
             } else {
-                return detectBitrateInternal(api, tests, index + 1, bitrate);
+                return detectBitrateInternal(api, tests, index + 1, bitrate, normalize);
             }
         },
-        () => normalizeReturnBitrate(currentBitrate || 0)
+        () => normalize(currentBitrate || 0)
     );
 };
 
@@ -222,4 +222,21 @@ export const detectBitrate = (api: Api, force: boolean) => {
         });
 
     return pendingBitrateDetection;
+};
+
+// Disc ABR needs raw capacity, not the normalized budget or the LAN minimum.
+// Keep this short-lived sample separate from ordinary playback's existing cache.
+let discSample: { server: string; time: number; bitrate: number } | undefined;
+
+export const detectDiscBandwidth = async (api: Api, force = false) => {
+    if (!force && discSample?.server === api.basePath && Date.now() - discSample.time < 60_000) {
+        return discSample.bitrate;
+    }
+    const bitrate = await detectBitrateInternal(api, [
+        { bytes: 500_000, threshold: 500_000 },
+        { bytes: 1_000_000, threshold: 20_000_000 },
+        { bytes: 3_000_000, threshold: 50_000_000 }
+    ], 0, undefined, value => value);
+    discSample = { server: api.basePath, time: Date.now(), bitrate };
+    return bitrate;
 };

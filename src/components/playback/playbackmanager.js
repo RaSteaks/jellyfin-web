@@ -513,6 +513,17 @@ async function getPlaybackInfo(player, apiClient, item, deviceProfile, mediaSour
 
     query.DeviceProfile = deviceProfile;
     query.SupportsDiscTitleSelection = true;
+    const isDisc = mediaSourceId?.startsWith('disc-') || ['BluRay', 'Dvd', 'Iso'].includes(item.VideoType);
+    if (isDisc) {
+        const syncPlay = pluginManager.firstOfType(PluginType.SyncPlay)?.instance;
+        query.EnableAdaptiveBitrateStreaming = playbackManager.enableAutomaticBitrateDetection(player)
+            && !syncPlay?.Manager.isSyncPlayEnabled();
+        if (query.EnableAdaptiveBitrateStreaming) {
+            // The server uses this ceiling only if it can offer adaptive HLS.
+            // Keep the measured MaxStreamingBitrate for a single-quality fallback.
+            query.MaxAdaptiveStreamingBitrate = deviceProfile.MaxStreamingBitrate || 120000000;
+        }
+    }
 
     const res = await getMediaInfoApi(api).getPostedPlaybackInfo({ itemId: itemId, playbackInfoDto: query });
     if (res.data.RequiresDiscTitleSelection) {
@@ -1452,7 +1463,9 @@ export class PlaybackManager {
                 let promise;
                 if (options.enableAutomaticBitrateDetection) {
                     appSettings.enableAutomaticBitrateDetection(endpointInfo.IsInNetwork, mediaType, true);
-                    promise = bitrateTest.detectBitrate(api, true);
+                    promise = self.currentMediaSource(player)?.DiscTitle != null ?
+                        bitrateTest.detectDiscBandwidth(api, true).then(value => value * 0.7) :
+                        bitrateTest.detectBitrate(api, true);
                 } else {
                     appSettings.enableAutomaticBitrateDetection(endpointInfo.IsInNetwork, mediaType, false);
                     promise = Promise.resolve(options.maxBitrate);
@@ -1789,7 +1802,7 @@ export class PlaybackManager {
                         result.MediaSources[0].hasAlternateVersions = currentMediaSource.hasAlternateVersions;
                         currentMediaSource = result.MediaSources[0];
 
-                        const streamInfo = createStreamInfo(apiClient, currentItem.MediaType, currentItem, currentMediaSource, ticks, player);
+                        const streamInfo = createStreamInfo(apiClient, currentItem.MediaType, currentItem, currentMediaSource, ticks, player, maxBitrate / 0.7);
                         streamInfo.fullscreen = currentPlayOptions.fullscreen;
                         streamInfo.lastMediaInfoQuery = lastMediaInfoQuery;
                         streamInfo.resetSubtitleOffset = false;
@@ -2219,9 +2232,16 @@ export class PlaybackManager {
                 const source = response.MediaSources[0];
                 options.mediaSourceId = source.Id;
                 options.startPositionTicks = options.startPositionTicks === 0 ? 0 : source.DiscResumePositionTicks || 0;
-                options.audioStreamIndex = source.DefaultAudioStreamIndex;
-                options.subtitleStreamIndex = source.DefaultSubtitleStreamIndex;
-                options.secondarySubtitleStreamIndex = -1;
+                if (firstSource?.Id !== source.Id) {
+                    options.audioStreamIndex = source.DefaultAudioStreamIndex;
+                    options.subtitleStreamIndex = source.DefaultSubtitleStreamIndex;
+                    options.secondarySubtitleStreamIndex = -1;
+                } else {
+                    // Detail-source tracks already describe this title; retain explicit choices.
+                    options.audioStreamIndex ??= source.DefaultAudioStreamIndex;
+                    options.subtitleStreamIndex ??= source.DefaultSubtitleStreamIndex;
+                    options.secondarySubtitleStreamIndex ??= -1;
+                }
                 items[start] = await client.getItem(client.getCurrentUserId(), source.DiscItemId);
                 items[start].ServerId = first.ServerId;
             }
@@ -2703,7 +2723,11 @@ export class PlaybackManager {
                     return apiClient.getEndpointInfo()
                         .then((endpointInfo) => {
                             if ((mediaType === 'Video' || mediaType === 'Audio') && appSettings.enableAutomaticBitrateDetection(endpointInfo.IsInNetwork, mediaType)) {
-                                return bitrateTest.detectBitrate(api)
+                                const isDisc = ['BluRay', 'Dvd', 'Iso'].includes(item.VideoType);
+                                const detection = isDisc ?
+                                    bitrateTest.detectDiscBandwidth(api).then(value => value * 0.7) :
+                                    bitrateTest.detectBitrate(api);
+                                return detection
                                     .then((bitrate) => {
                                         appSettings.maxStreamingBitrate(endpointInfo.IsInNetwork, mediaType, bitrate);
                                         return bitrate;
@@ -2842,7 +2866,7 @@ export class PlaybackManager {
 
                     const playedItem = await getItemOfMediaSource(apiClient, item, mediaSource, sourceItem);
 
-                    const streamInfo = createStreamInfo(apiClient, item.MediaType, playedItem, mediaSource, options.startPosition, player);
+                    const streamInfo = createStreamInfo(apiClient, item.MediaType, playedItem, mediaSource, options.startPosition, player, maxBitrate / 0.7);
                     streamInfo.aspectRatio = playOptions.aspectRatio;
                     streamInfo.fullscreen = playOptions.fullscreen;
 
@@ -2935,7 +2959,7 @@ export class PlaybackManager {
             });
         };
 
-        function createStreamInfo(apiClient, type, item, mediaSource, startPosition, player) {
+        function createStreamInfo(apiClient, type, item, mediaSource, startPosition, player, initialBandwidth) {
             let mediaUrl;
             let contentType;
             let transcodingOffsetTicks = 0;
@@ -3012,6 +3036,7 @@ export class PlaybackManager {
             }
 
             const resultInfo = {
+                initialBandwidth,
                 url: mediaUrl,
                 mimeType: contentType,
                 transcodingOffsetTicks: transcodingOffsetTicks,

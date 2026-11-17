@@ -587,6 +587,18 @@ export default function (view) {
         }, 500);
     }
 
+    function onDiscBufferChange() {
+        const status = currentPlayer?.getDiscBufferStatus?.();
+        const container = view.querySelector('.osdDiscBufferStatus');
+        container.classList.toggle('hide', !status?.waiting);
+        if (status?.waiting) {
+            container.querySelector('.discBufferText').textContent = globalize.translate(
+                'DiscBufferingStatus', Math.floor(status.bufferedSeconds), Math.ceil(status.targetSeconds));
+        } else {
+            container.querySelector('.discBufferText').textContent = '';
+        }
+    }
+
     function onCanPlay() {
         if (loadingTimeout) {
             clearTimeout(loadingTimeout);
@@ -617,6 +629,8 @@ export default function (view) {
         Events.on(player, 'beginFetch', onBeginFetch);
         Events.on(player, 'endFetch', onEndFetch);
         Events.on(player, 'waiting', onWaiting);
+        Events.on(player, 'discbufferchange', onDiscBufferChange);
+        onDiscBufferChange();
         Events.on(player, 'canplay', onCanPlay);
         resetUpNextDialog();
 
@@ -649,6 +663,7 @@ export default function (view) {
             Events.off(player, 'beginFetch', onBeginFetch);
             Events.off(player, 'endFetch', onEndFetch);
             Events.off(player, 'waiting', onWaiting);
+            Events.off(player, 'discbufferchange', onDiscBufferChange);
             Events.off(player, 'canplay', onCanPlay);
             currentPlayer = null;
         }
@@ -1968,6 +1983,7 @@ export default function (view) {
     view.querySelector('.btnPreviousChapter').addEventListener('click', function () {
         playbackManager.previousChapter(currentPlayer);
     });
+    view.querySelector('.btnDiscPlayNow').addEventListener('click', () => currentPlayer?.playNow?.());
     view.querySelector('.btnPause').addEventListener('click', function () {
         playbackManager.playPause(currentPlayer);
     });
